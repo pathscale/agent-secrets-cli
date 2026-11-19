@@ -1,0 +1,23 @@
+disallowed-macros = [
+  { path = "std::println", reason = "use crate::output" },
+  { path = "std::print", reason = "use crate::output" },
+  { path = "std::eprintln", reason = "use crate::output" },
+  { path = "std::eprint", reason = "use crate::output" },
+  { path = "std::dbg", reason = "use crate::output" },
+]
+disallowed-methods = [
+  { path = "std::io::stdout", reason = "use crate::output" },
+  { path = "std::io::stderr", reason = "use crate::output" },
+  { path = "std::fs::write", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::File::create", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::File::create_new", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::File::options", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::OpenOptions::new", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::create_dir", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::create_dir_all", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::rename", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::copy", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::hard_link", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::os::unix::fs::symlink", reason = "agent-secrets-cli never writes to disk" },
+  { path = "std::fs::set_permissions", reason = "agent-secrets-cli never writes to disk" },
+]

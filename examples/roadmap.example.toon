@@ -1,0 +1,47 @@
+# Example non-secret operational roadmap for AI coding agents (TOON format).
+# Copy to `.agent-secrets-cli/roadmap.toon` outside git (or set `AGENT_SECRETS_ROADMAP`)
+# and query with:
+#   agent-secrets-cli --roadmap | cat
+#   agent-secrets-cli --roadmap=recipes_and_playbooks | cat
+
+metadata[1]{schema_version,tool,scope,format,usage}:
+  "2","agent-secrets-cli","example-org-local","toon","Copy to `.agent-secrets-cli/roadmap.toon` outside git (or set `AGENT_SECRETS_ROADMAP`) and query with `agent-secrets-cli --roadmap | cat` or `agent-secrets-cli --roadmap=recipes_and_playbooks | cat`."
+
+agent_rules[4]{id,rule,enforcement,detail}:
+  1,"never-see-secrets","hard-ban","Never print, echo, cat, or pass secret values in CLI arguments; inject in-memory via `agent-secrets-cli exec` or stdin."
+  2,"names-only-discovery","hard-ban","Discover secret names via `doppler secrets -p <project> -c <config> --only-names` or `agent-secrets-cli --roadmap=doppler_secrets_register | cat`."
+  3,"pipe-only-safe-stdout","cli-enforced","Stdout is refused unless `--safe` is piped (never redirected to a regular file) and passes raw/base64/hex/JSON/URL leak scanning."
+  4,"stage-before-restart","operational","Write to Doppler first, stage to Fly with `to-fly`, and pass `--restart` in issuer-before-verifier order only when rollout is authorized."
+
+fly_and_host_deployments[3]{service,doppler_project,active_configs,secret_delivery,fly_apps_or_hosts,notes}:
+  "auth-gateway","auth-gateway","dev,stg,prd","doppler-at-boot","auth-gateway-stg-fly, auth-gateway-prd-fly","Restart issuer (`auth-gateway`) before downstream verifiers."
+  "api-billing","api-billing","dev,stg,prd","to-fly + patch-config","api-billing-stg-fly, api-billing-prd-fly","Fly secrets: `BILLING_CONFIG_TOML`, `BILLING_WEBHOOK_SECRET`."
+  "signer-host","host-signing","prd,signing,assocsigning","split-custody","linux-signer-01 (us-west-2)","Isolated signing root configs; never branch `prd`."
+
+private_keys_and_custody[2]{authority_or_seed,purpose_header,commands,doppler_passphrase,s3_second_half,public_pin,invariants}:
+  "package-signing-ed25519","package-seed","package-seal, package-sign, package-verify","host-signing/signing: PACKAGE_SIGNING_PASSPHRASE","s3://example-signing-sealed/package-seed.sealed","keys/package-signing.pub","HKDF-SHA256 + XChaCha20-Poly1305; GitHub OIDC role `s3:GetObject` on single object."
+  "assoc-signing-ed25519","assoc-seed","assoc-seal, assoc-pubkey, assoc-exec","host-signing/assocsigning: ASSOC_SIGNING_PASSPHRASE","s3://example-signing-sealed/assoc-seed.sealed","64-hex public key pin","Linux `O_NOFOLLOW` root-owned ELF + `ASSOC_SIGNER_PATH`/`ASSOC_SIGNER_SHA256` + `fexecve` + 32B stdin."
+
+private_registry_apps[1]{registry,app_name,app_id,read_token_binding,publish_token_binding,notes}:
+  "crates.vip","acme-core","app_example_01","ci-tokens/CARGO_VIP_TOKEN","ci-tokens/CARGO_VIP_PUBLISH_TOKEN","Manage apps/tokens via `vip-apps`, `create-vip-app`, and `create-vip-token`."
+
+agent_accounts[2]{project,config,prefix,public_username,service,role,notes}:
+  "agent-accounts","prd","CI_RELEASE_BOT","ci-release@example.com","crates.io / crates.vip","ReleaseAdmin","Inject tokens via `exec`; password never leaves Doppler."
+  "agent-accounts","dev","QA_SANDBOX_USER","qa-sandbox@example.com","staging-api","StandardUser","Unprivileged QA fixture account."
+
+recipes_and_playbooks[7]{id,scenario,command_or_sequence,critical_notes}:
+  "cargo-vip-check","Build or check against private crates.vip dependencies","agent-secrets-cli exec --config dev --secret ci-tokens/CARGO_VIP_TOKEN --pass-env TMPDIR -- cargo vip check","Injects read-only `CARGO_VIP_TOKEN` into cleared child env (`PATH`, `HOME`, `LANG`, `TMPDIR`)."
+  "cargo-vip-publish","Publish crate to private crates.vip registry","agent-secrets-cli exec --config prd --secret ci-tokens/CARGO_VIP_PUBLISH_TOKEN=CARGO_VIP_TOKEN --pass-env TMPDIR -- cargo vip publish","Read-only `CARGO_VIP_TOKEN` returns HTTP 403 on publish; map `CARGO_VIP_PUBLISH_TOKEN=CARGO_VIP_TOKEN`."
+  "mint-vip-token","Mint a crates.vip ReadOnly or Publish token straight into Doppler","agent-secrets-cli --safe create-vip-token --config dev --app-id app_example_01 --name ci-reader --scope ReadOnly --token ci-tokens/CARGO_VIP_TOKEN | cat","Token is written directly to Doppler and never printed to stdout."
+  "crates-io-publish","Publish public crate to crates.io","agent-secrets-cli exec --config prd --secret agent-accounts/CRATES_IO_TOKEN=CARGO_REGISTRY_TOKEN --pass-env TMPDIR -- cargo publish","Secret never touches stdout, argv, shell history, or disk."
+  "rotate-shared-pair","Rotate shared 32-char Base62 verifier pair across services","agent-secrets-cli --safe rotate --config stg --group auth-gateway/AUTH__CALLBACK_KEY,api-billing/BILLING__CALLBACK_KEY --restart auth-gateway-stg-fly,api-billing-stg-fly | cat","Mints key, verifies readback on all targets, and restarts issuer before verifier."
+  "read-public-scalar","Read allow-listed public config scalar","agent-secrets-cli --safe get-path --config dev --secret api-billing/BILLING_CONFIG_TOML --format toml --path server.port | cat","Fails closed with zero output on sensitive or unlisted leaf names."
+  "project-to-github","Stage Doppler secret into GitHub Actions over stdin","agent-secrets-cli --safe to-github --config prd --secret ci-tokens/CARGO_VIP_TOKEN --repo example-org/api-billing | cat","Streams secret to `gh secret set` via stdin."
+
+doppler_secrets_register[6]{project,configs,secret_name,safe_to_print,purpose_and_consumer}:
+  "ci-tokens","dev,stg,prd","CARGO_VIP_TOKEN",false,"Read-only `crates.vip` registry token consumed by `cargo vip build` / `cargo vip check`."
+  "ci-tokens","prd","CARGO_VIP_PUBLISH_TOKEN",false,"Publish-scoped `crates.vip` registry token mapped to `CARGO_VIP_TOKEN` for `cargo vip publish`."
+  "agent-accounts","prd","CRATES_IO_TOKEN",false,"Public `crates.io` publish token mapped to `CARGO_REGISTRY_TOKEN`."
+  "agent-accounts","prd","CI_READER_TOKEN",false,"Single-config read-only Doppler service token for CI."
+  "auth-gateway","dev,stg,prd","AUTH__CALLBACK_KEY",false,"Shared Base62 callback key paired with `api-billing/BILLING__CALLBACK_KEY`."
+  "api-billing","dev,stg,prd","BILLING_CONFIG_TOML",false,"Structured service TOML config edited via `patch-config`."

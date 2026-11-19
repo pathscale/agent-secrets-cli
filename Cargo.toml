@@ -1,0 +1,57 @@
+[package]
+name = "agent-secrets-cli"
+version = "0.3.2"
+edition = "2024"
+description = "Rotate, validate, sign, and inject secrets across Doppler, Fly.io, Tigris/S3, and GitHub Actions without ever printing a secret value, built for AI coding agents."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pathscale/agent-secrets-cli"
+homepage = "https://github.com/pathscale/agent-secrets-cli"
+readme = "README.md"
+rust-version = "1.87"
+keywords = ["secrets", "doppler", "fly", "cli", "agents"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/clippy.toml",
+    "/docs/credential-origins.md",
+    "/docs/custody-exec-policy.md",
+    "/docs/public-leaf-policy.md",
+    "/examples/roadmap.example.toon",
+]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+psc-nanoid = "^3"
+data-encoding = "^2"
+chacha20poly1305 = "^0.10"
+ed25519-dalek = { version = "^2", features = ["std", "zeroize"] }
+endpoint-libs = { version = "^4.3.0", features = ["door", "ws-client", "ws-client-tls"] }
+futures = "0.3"
+getrandom = "^0.3"
+hkdf = "^0.12"
+nagoya = { version = "^0.1.25", default-features = false, features = ["reactor"] }
+nago-rustls = { version = "^0.2.3", default-features = false }
+nago-wss = { version = "^0.3.3", default-features = false, features = ["reactor", "tls"] }
+sha2 = "^0.10"
+serde_json = "1"
+toml_edit = "0.25"
+zeroize = "^1"
+libc = "^0.2"
+ps-rustcrypto = { version = "^0.6.2", default-features = false, features = ["alloc", "tls12", "zeroize", "rsa-pss"] }
+rustls = { version = "0.23", default-features = false, features = ["custom-provider", "std"] }
+webpki-roots = "1"
+rusty_alloc = { package = "ps-rusty_alloc", version = "^2.4.1" }
+totp-rs = { version = "^5.7", default-features = false, features = ["gen_secret", "otpauth"] }
+
+[dev-dependencies]
+ed25519-dalek = { version = "^2", features = ["pkcs8"] }
+rcgen = { version = "0.14.7", default-features = false }
+
+[profile.release]
+panic = "abort"
+
+[lints.clippy]
+disallowed_methods = "deny"
+disallowed_macros = "deny"

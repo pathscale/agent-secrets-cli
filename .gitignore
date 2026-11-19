@@ -1,0 +1,7 @@
+/target
+.DS_Store
+Cargo.lock
+/.agent-secrets-cli
+roadmap.toon
+*.patch
+*.diff
