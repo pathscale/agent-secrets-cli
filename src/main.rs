@@ -129,14 +129,14 @@ enum Action {
         long_about = "Create-only fs-verity seed enrollment. A random passphrase is stored only in pays-host/imagesigning, the sealed seed only in its private S3 object, and the public key only in pays-host/prd. The command reads custody back, unseals locally, verifies the public key, and prints only its lowercase hex value."
     )]
     FsVeritySeal(package_sign::FsVeritySealArgs),
-    /// Unseal and sign package artifacts in a GitHub Actions job.
+    /// Unseal and sign package artifacts via GitHub Actions OIDC or owner HOME session.
     #[command(name = "package-sign")]
     PackageSign(package_sign::PackageSignArgs),
-    /// Unseal and sign fs-verity formatted digests in a GitHub Actions job.
+    /// Unseal and sign fs-verity formatted digests via GitHub Actions OIDC or owner HOME session.
     #[command(
         name = "fsverity-sign",
         about = "Sign exact fs-verity formatted digests with Ed25519",
-        long_about = "Read the fs-verity passphrase from imagesigning, assume the supplied image-signing role with GitHub Actions OIDC, and download the one sealed seed object. Each input must be the exact 44-byte SHA-256 fs-verity payload; signatures are raw 64-byte Ed25519 outputs."
+        long_about = "Read the fs-verity passphrase from imagesigning, assume the supplied image-signing role with GitHub Actions OIDC (or use the owner HOME-scoped Doppler and AWS session locally when OIDC is absent), and download the one sealed seed object. Each input must be the exact 44-byte SHA-256 fs-verity payload; signatures are raw 64-byte Ed25519 outputs."
     )]
     FsVeritySign(package_sign::FsVeritySignArgs),
     /// Verify package artifact sidecars with a local public pin.
@@ -990,7 +990,9 @@ fn run(action: Action) -> Result<()> {
             restart_dev,
         } => {
             if !restart_dev {
-                output::status("--restart-dev is required to revoke sessions on both Honey DEV apps");
+                output::status(
+                    "--restart-dev is required to revoke sessions on both Honey DEV apps",
+                );
                 bail!("missing DEV restart acknowledgement");
             }
             std::panic::set_hook(Box::new(|info| output::panic_location(info.location())));
@@ -1604,12 +1606,16 @@ fn stage_to_fly(config: &str, targets: &[Target], apps: &[String]) -> Result<()>
             pairs.push_str(&format!("{}={value}\n", target.name));
         }
     }
-    stage_to_fly_apps(apps, |app| fly_import(app, &pairs), |app| {
-        for target in targets {
-            output::line(&format!("staged {target} ({config}) on {app}"))?;
-        }
-        Ok(())
-    })
+    stage_to_fly_apps(
+        apps,
+        |app| fly_import(app, &pairs),
+        |app| {
+            for target in targets {
+                output::line(&format!("staged {target} ({config}) on {app}"))?;
+            }
+            Ok(())
+        },
+    )
 }
 
 fn stage_to_fly_apps(
@@ -1637,10 +1643,14 @@ mod stage_to_fly_tests {
     fn report_failure_does_not_interrupt_imports() {
         let apps = ["first", "second", "third"].map(str::to_owned);
         let mut imported = Vec::new();
-        let result = stage_to_fly_apps(&apps, |app| {
-            imported.push(app.to_owned());
-            Ok(())
-        }, |_| Err(eyre!("synthetic output failure")));
+        let result = stage_to_fly_apps(
+            &apps,
+            |app| {
+                imported.push(app.to_owned());
+                Ok(())
+            },
+            |_| Err(eyre!("synthetic output failure")),
+        );
         assert!(result.is_err());
         assert_eq!(imported, ["first", "second", "third"]);
     }
@@ -1650,14 +1660,18 @@ mod stage_to_fly_tests {
         let apps = ["first", "second", "third"].map(str::to_owned);
         let mut attempted = Vec::new();
         let mut reported = Vec::new();
-        let result = stage_to_fly_apps(&apps, |app| {
-            attempted.push(app.to_owned());
-            ensure!(app != "second", "synthetic import failure");
-            Ok(())
-        }, |app| {
-            reported.push(app.to_owned());
-            Err(eyre!("synthetic output failure"))
-        });
+        let result = stage_to_fly_apps(
+            &apps,
+            |app| {
+                attempted.push(app.to_owned());
+                ensure!(app != "second", "synthetic import failure");
+                Ok(())
+            },
+            |app| {
+                reported.push(app.to_owned());
+                Err(eyre!("synthetic output failure"))
+            },
+        );
         assert_eq!(attempted, ["first", "second"]);
         assert_eq!(reported, ["first"]);
         assert_eq!(result.unwrap_err().to_string(), "synthetic import failure");
@@ -2102,8 +2116,7 @@ mod honey_users_tests {
         assert_eq!(cli.roadmap.as_deref(), Some(""));
         assert!(cli.action.is_none());
 
-        let filtered =
-            Cli::try_parse_from(["agent-secrets-cli", "--roadmap=agent_rules"]).unwrap();
+        let filtered = Cli::try_parse_from(["agent-secrets-cli", "--roadmap=agent_rules"]).unwrap();
         assert_eq!(filtered.roadmap.as_deref(), Some("agent_rules"));
 
         use endpoint_libs::libs::door::document::{Format, decode_document};
@@ -2133,15 +2146,21 @@ mod honey_users_tests {
             let doc = decode_document(&local_compact, Format::Toon)
                 .expect("roadmap.toon must be valid TOON");
             assert!(
-                doc.tables.iter().any(|t| &*t.name == "private_keys_and_custody"),
+                doc.tables
+                    .iter()
+                    .any(|t| &*t.name == "private_keys_and_custody"),
                 "local roadmap must contain private_keys_and_custody table"
             );
             assert!(
-                doc.tables.iter().any(|t| &*t.name == "fly_and_host_deployments"),
+                doc.tables
+                    .iter()
+                    .any(|t| &*t.name == "fly_and_host_deployments"),
                 "local roadmap must contain fly_and_host_deployments table"
             );
             assert!(
-                doc.tables.iter().any(|t| &*t.name == "doppler_secrets_register"),
+                doc.tables
+                    .iter()
+                    .any(|t| &*t.name == "doppler_secrets_register"),
                 "local roadmap must contain doppler_secrets_register table"
             );
         }

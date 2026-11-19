@@ -1,6 +1,6 @@
 [package]
 name = "agent-secrets-cli"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "Rotate, validate, sign, and inject secrets across Doppler, Fly.io, Tigris/S3, and GitHub Actions without ever printing a secret value, built for AI coding agents."
 license = "MIT OR Apache-2.0"

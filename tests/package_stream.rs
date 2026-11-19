@@ -267,3 +267,172 @@ fn fsverity_sign_preflights_explicit_signature_before_provider() {
     assert!(!control.status.success());
     assert!(root.join("provider-called").exists());
 }
+
+#[test]
+fn owner_session_signing_works_without_oidc_and_refuses_doppler_token() {
+    use ed25519_dalek::{Signer, Verifier};
+
+    let root = std::env::temp_dir().join(format!("owner-signing-stream-{}", std::process::id()));
+    fs::create_dir_all(root.join("keys")).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+
+    let pkg_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    let fsv_key = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+    fs::write(
+        root.join("keys/package-signing.pub"),
+        format!(
+            "{}\n",
+            data_encoding::HEXLOWER.encode(&pkg_key.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("fsv.pub"),
+        format!(
+            "{}\n",
+            data_encoding::HEXLOWER.encode(&fsv_key.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("pkg-blob"),
+        sealed_seed::seal_seed(&[17; 32], &[29; 32], "package-seed").unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        root.join("fsv-blob"),
+        sealed_seed::seal_seed(&[23; 32], &[31; 32], "fsverity-seed").unwrap(),
+    )
+    .unwrap();
+    fs::write(root.join("release.json"), b"{\"schema\":\"v1\"}\n").unwrap();
+    let fsv_digest = [b"FSVerity".as_slice(), &[1, 0, 32, 0], &[0x5a; 32]].concat();
+    fs::write(root.join("0.digest"), &fsv_digest).unwrap();
+
+    let doppler_script = format!(
+        r#"#!/bin/sh
+[ "$1" = --scope ] && [ "$2" = "$HOME" ] || exit 90
+shift 2
+case "$*" in
+'secrets get PAYS_PACKAGE_SIGNING_PASSPHRASE --plain -p pays-host -c signing') printf '%s' '{}' ;;
+'secrets get AWS_PACKAGE_SIGNING_ROLE_ARN --plain -p pays-host -c signing') printf '%s' 'arn:aws:iam::123456789012:role/fixture-pkg' ;;
+'secrets get PAYS_FSVERITY_SIGNING_PASSPHRASE --plain -p pays-host -c imagesigning') printf '%s' '{}' ;;
+'secrets get AWS_IMAGE_SIGNING_ROLE_ARN --plain -p pays-host -c imagesigning') printf '%s' 'arn:aws:iam::123456789012:role/fixture-img' ;;
+*) exit 91 ;;
+esac
+"#,
+        data_encoding::BASE64.encode(&[29; 32]),
+        data_encoding::BASE64.encode(&[31; 32]),
+    );
+    let aws_script = r#"#!/bin/sh
+case "$1 $2" in
+'s3api head-object')
+    case "$*" in
+    *package-seed.sealed*) wc -c < pkg-blob ;;
+    *fsverity-seed.sealed*) wc -c < fsv-blob ;;
+    *) exit 92 ;;
+    esac ;;
+'s3 cp')
+    case "$3" in
+    s3://pays-signing-sealed/package-seed.sealed) cat pkg-blob ;;
+    s3://pays-signing-sealed/fsverity-seed.sealed) cat fsv-blob ;;
+    *) exit 93 ;;
+    esac ;;
+*) exit 94 ;;
+esac
+"#;
+    for (name, script) in [("doppler", doppler_script.as_str()), ("aws", aws_script)] {
+        fs::write(root.join(name), script).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let binary = env!("CARGO_BIN_EXE_agent-secrets-cli");
+    let pkg_out = Command::new(binary)
+        .args([
+            "--safe",
+            "package-sign",
+            "--domain",
+            "package",
+            "--file",
+            "release.json",
+        ])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+        .env("HOME", &root)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(pkg_out.status.success(), "owner package-sign must succeed");
+    let pkg_line = String::from_utf8(pkg_out.stdout).unwrap();
+    let (pkg_b64, pkg_path) = pkg_line.trim().split_once(' ').unwrap();
+    assert_eq!(pkg_path, "release.json.sig");
+    let pkg_sig = ed25519_dalek::Signature::from_slice(
+        &data_encoding::BASE64.decode(pkg_b64.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    pkg_key
+        .verifying_key()
+        .verify(
+            b"pays-artifact-sign-v1\ndomain:package\nname:release.json\nlength:16\n{\"schema\":\"v1\"}\n",
+            &pkg_sig,
+        )
+        .unwrap();
+
+    let fsv_out = Command::new(binary)
+        .args([
+            "--safe",
+            "fsverity-sign",
+            "--public-key",
+            "fsv.pub",
+            "--digest",
+            "0.digest",
+            "--signature",
+            "0.sig",
+        ])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+        .env("HOME", &root)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(fsv_out.status.success(), "owner fsverity-sign must succeed");
+    let fsv_line = String::from_utf8(fsv_out.stdout).unwrap();
+    let (fsv_b64, fsv_path) = fsv_line.trim().split_once(' ').unwrap();
+    assert_eq!(fsv_path, "0.sig");
+    let fsv_sig = ed25519_dalek::Signature::from_slice(
+        &data_encoding::BASE64.decode(fsv_b64.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fsv_sig.to_bytes(), fsv_key.sign(&fsv_digest).to_bytes());
+    fsv_key
+        .verifying_key()
+        .verify(&fsv_digest, &fsv_sig)
+        .unwrap();
+
+    let refused = Command::new(binary)
+        .args([
+            "--safe",
+            "package-sign",
+            "--domain",
+            "package",
+            "--file",
+            "release.json",
+        ])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+        .env("HOME", &root)
+        .env("DOPPLER_TOKEN", "dp.st.synthetic")
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "DOPPLER_TOKEN without OIDC must be refused"
+    );
+    assert!(refused.stdout.is_empty());
+}

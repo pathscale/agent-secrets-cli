@@ -7,10 +7,10 @@ use std::{
     process::{Command, Stdio},
 };
 
+use crate::eyre::{Result, bail, ensure, eyre};
 use clap::Args;
 use data_encoding::{BASE64, HEXLOWER};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use crate::eyre::{Result, bail, ensure, eyre};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{Target, doppler_command, get, parse_target, sealed_seed, try_get};
@@ -90,9 +90,9 @@ pub struct FsVeritySignArgs {
     #[arg(long, default_value = IMAGE_SIGNING_CONFIG)]
     passphrase_config: String,
 
-    /// AWS image-signing role ARN supplied by the caller.
-    #[arg(long, required = true)]
-    role_arn: String,
+    /// AWS image-signing role ARN supplied by the caller (required in GitHub Actions OIDC).
+    #[arg(long)]
+    role_arn: Option<String>,
 
     /// File containing the 64-character lowercase public key pin.
     #[arg(long, required = true)]
@@ -301,6 +301,15 @@ pub fn package_sign(args: PackageSignArgs) -> Result<()> {
     validate_stdout_paths(files.iter().map(|file| sidecar_path(&file.path)))?;
     let pin = read_public_pin(&args.public_key)?;
 
+    let has_oidc = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some()
+        || std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    if !has_oidc {
+        ensure!(
+            std::env::var_os("DOPPLER_TOKEN").is_none(),
+            "unset DOPPLER_TOKEN and use the owner HOME-scoped login"
+        );
+    }
+
     let passphrase_base64 = Zeroizing::new(
         get(&args.passphrase, &args.config)
             .map_err(|_| eyre!("could not read package signing passphrase"))?,
@@ -312,14 +321,18 @@ pub fn package_sign(args: PackageSignArgs) -> Result<()> {
     crate::output::register_secret(role_arn.as_bytes());
     validate_role_arn(&role_arn, ROLE_NAME)?;
 
-    let oidc_token = request_oidc_token()?;
-    let credentials = assume_signing_role(
-        &role_arn,
-        &oidc_token,
-        AWS_REGION,
-        "agent-secrets-cli-package-sign",
-    )?;
-    let blob = read_sealed_object(Some(&credentials), SEALED_OBJECT)?;
+    let blob = if has_oidc {
+        let oidc_token = request_oidc_token()?;
+        let credentials = assume_signing_role(
+            &role_arn,
+            &oidc_token,
+            AWS_REGION,
+            "agent-secrets-cli-package-sign",
+        )?;
+        read_sealed_object(Some(&credentials), SEALED_OBJECT)?
+    } else {
+        read_sealed_object(None, SEALED_OBJECT)?
+    };
     crate::output::register_secret(&blob);
     let seed = sealed_seed::unseal_seed(&blob, &passphrase, &args.purpose)?;
     crate::output::register_secret(&seed[..]);
@@ -346,22 +359,47 @@ pub fn fsverity_sign(args: FsVeritySignArgs) -> Result<()> {
     let pin = read_public_pin(&args.public_key)?;
     let files = fsverity_files(args.digest, args.signature, &args.public_key)?;
 
+    let has_oidc = std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_URL").is_some()
+        || std::env::var_os("ACTIONS_ID_TOKEN_REQUEST_TOKEN").is_some();
+    if !has_oidc {
+        ensure!(
+            std::env::var_os("DOPPLER_TOKEN").is_none(),
+            "unset DOPPLER_TOKEN and use the owner HOME-scoped login"
+        );
+    }
+    if let Some(role_arn) = &args.role_arn {
+        validate_role_arn(role_arn, IMAGE_ROLE_NAME)?;
+    }
+
     let passphrase_base64 = Zeroizing::new(
         get(&target(FSVERITY_PASSPHRASE_NAME), &args.passphrase_config)
             .map_err(|_| eyre!("could not read fs-verity signing passphrase"))?,
     );
     crate::output::register_secret(passphrase_base64.as_bytes());
     let passphrase = decode_passphrase(&passphrase_base64)?;
-    validate_role_arn(&args.role_arn, IMAGE_ROLE_NAME)?;
 
-    let oidc_token = request_oidc_token()?;
-    let credentials = assume_signing_role(
-        &args.role_arn,
-        &oidc_token,
-        AWS_REGION,
-        "agent-secrets-cli-fsverity-sign",
-    )?;
-    let blob = read_sealed_object(Some(&credentials), FSVERITY_SEALED_OBJECT)?;
+    let blob = if has_oidc {
+        let role_arn = args
+            .role_arn
+            .as_deref()
+            .ok_or_else(|| eyre!("--role-arn is required in GitHub Actions OIDC"))?;
+        let oidc_token = request_oidc_token()?;
+        let credentials = assume_signing_role(
+            role_arn,
+            &oidc_token,
+            AWS_REGION,
+            "agent-secrets-cli-fsverity-sign",
+        )?;
+        read_sealed_object(Some(&credentials), FSVERITY_SEALED_OBJECT)?
+    } else {
+        if args.role_arn.is_none() {
+            let role_arn = get(&target(IMAGE_ROLE_NAME), &args.passphrase_config)
+                .map_err(|_| eyre!("could not read fs-verity signing role"))?;
+            crate::output::register_secret(role_arn.as_bytes());
+            validate_role_arn(&role_arn, IMAGE_ROLE_NAME)?;
+        }
+        read_sealed_object(None, FSVERITY_SEALED_OBJECT)?
+    };
     crate::output::register_secret(&blob);
     let seed = sealed_seed::unseal_seed(&blob, &passphrase, FSVERITY_PURPOSE)?;
     crate::output::register_secret(&seed[..]);
